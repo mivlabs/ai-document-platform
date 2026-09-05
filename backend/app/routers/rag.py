@@ -1,12 +1,14 @@
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from pydantic import BaseModel
 from typing import List, Optional
 from app.database import get_db
 from app.services.embeddings import embeddings_service
+from app.services.cache import build_rag_cache_key, get_cached_rag_response, set_cached_rag_response
 from openai import AsyncOpenAI
 import os
+import uuid
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 
@@ -39,7 +41,16 @@ async def query_documents(
     print(f"\n{'='*50}")
     print(f"🔍 Query: {request.query}")
     print(f"📄 Document IDs: {request.document_ids}")
-    
+
+    # Кэш: одинаковый (query, top_k, document_ids) — не платим за embedding
+    # и LLM-вызов повторно. Redis недоступен -> get_cached_rag_response
+    # молча вернёт None и мы просто пойдём по обычному пути ниже.
+    cache_key = build_rag_cache_key(request.query, request.top_k, request.document_ids)
+    cached = await get_cached_rag_response(cache_key)
+    if cached is not None:
+        print("⚡ Cache hit — возвращаем сохранённый ответ")
+        return RAGResponse(**cached)
+
     # Создаём embedding для запроса
     try:
         query_embedding = await embeddings_service.create_embeddings([request.query])
@@ -50,23 +61,38 @@ async def query_documents(
     # Формируем embedding как строку для SQL
     embedding_str = "[" + ",".join(map(str, query_embedding)) + "]"
     
-    # Фильтрация по document_ids если переданы
+    # Фильтрация по document_ids если переданы.
+    #
+    # ВАЖНО: раньше document_id склеивался в SQL через f-string
+    # (f"'{doc_id}'" без экранирования) — классическая SQL-инъекция,
+    # т.к. document_ids приходит из тела запроса как обычные строки.
+    # Теперь document_id передаётся только как bind-параметр
+    # (expanding bindparam -> `IN (:doc_ids_1, :doc_ids_2, ...)`),
+    # а сами значения валидируются как UUID до того, как вообще
+    # попадут в запрос.
     filter_clause = ""
     params = {
         "embedding": embedding_str,
         "top_k": request.top_k
     }
-    
+    extra_bindparams = []
+
     if request.document_ids:
-        doc_ids_str = ",".join([f"'{doc_id}'" for doc_id in request.document_ids])
-        filter_clause = f"WHERE document_id IN ({doc_ids_str})"
-        print(f"🔎 Filtering by document_ids: {doc_ids_str}")
+        try:
+            validated_ids = [str(uuid.UUID(doc_id)) for doc_id in request.document_ids]
+        except (ValueError, AttributeError, TypeError):
+            raise HTTPException(status_code=422, detail="document_ids must be valid UUIDs")
+
+        filter_clause = "WHERE document_id IN :doc_ids"
+        params["doc_ids"] = validated_ids
+        extra_bindparams.append(bindparam("doc_ids", expanding=True))
+        print(f"🔎 Filtering by document_ids: {validated_ids}")
     else:
         print("⚠️ No document_ids filter - searching ALL documents")
-    
+
     # Raw SQL для pgvector с фильтрацией
     sql = text(f"""
-        SELECT 
+        SELECT
             id, document_id, chunk_index, text,
             embedding <=> CAST(:embedding AS vector) AS distance
         FROM document_chunks
@@ -74,7 +100,9 @@ async def query_documents(
         ORDER BY embedding <=> CAST(:embedding AS vector)
         LIMIT :top_k
     """)
-    
+    if extra_bindparams:
+        sql = sql.bindparams(*extra_bindparams)
+
     try:
         result = await db.execute(sql, params)
         chunks = result.fetchall()
@@ -170,5 +198,7 @@ async def query_documents(
     ]
     
     print(f"{'='*50}\n")
-    
-    return RAGResponse(answer=answer, sources=sources)
+
+    rag_response = RAGResponse(answer=answer, sources=sources)
+    await set_cached_rag_response(cache_key, rag_response.model_dump())
+    return rag_response
