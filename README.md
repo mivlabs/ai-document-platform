@@ -2,6 +2,7 @@
 
 **RAG-система для анализа документов** — загружай PDF, задавай вопросы, получай точные ответы с цитатами из документа.
 
+![CI](https://github.com/mivlabs/ai-document-platform/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/Python-3.11-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+pgvector-blue)
@@ -37,7 +38,7 @@
 |-----------|-----------|
 | Backend | FastAPI, SQLAlchemy, asyncpg |
 | Database | PostgreSQL 16 + pgvector |
-| Cache | Redis |
+| Cache | Redis (кэш ответов `/rag/query` по хэшу запроса, TTL 1 час) |
 | LLM | Llama 3.3 70B (OpenRouter) |
 | Embeddings | OpenAI text-embedding-3-small |
 | Telegram | aiogram 3.x |
@@ -140,19 +141,39 @@ ai-document-platform/
 4. **LLM Generation** — Llama 3.3 70B генерирует ответ на основе контекста
 5. **Relevance Filter** — если max relevance < 0.10, бот честно говорит "нет информации"
 
-### Multi-user Support
-- Каждый пользователь видит только свои документы
-- История загруженных файлов хранится в памяти бота
-- Фильтрация по `document_ids` в RAG запросах
+### Работа с несколькими документами (не multi-user!)
+- Telegram-бот хранит список загруженных document_id в памяти процесса, по chat_id
+- RAG-запрос можно ограничить конкретными `document_ids`
+- **Важно:** это не изоляция пользователей на уровне бэкенда — в API нет аутентификации,
+  и любой клиент, знающий `document_id`, может обратиться к нему напрямую через
+  `/rag/query`. Разделение "видит только свои документы" сейчас существует только
+  в клиентском состоянии Telegram-бота, а не как гарантия сервера. Для реальной
+  multi-user изоляции нужна аутентификация + `owner_id` в таблице `documents` — это в Roadmap.
 
 ## 🚧 Roadmap
 
 - [ ] Поддержка DOCX, TXT файлов
 - [ ] OCR для сканов PDF
 - [ ] Hybrid search (BM25 + vector)
-- [ ] Аутентификация пользователей
+- [ ] Аутентификация пользователей + owner_id на документах (см. предупреждение выше про multi-user)
 - [ ] Деплой на VPS
-- [ ] CI/CD через GitHub Actions
+- [x] CI/CD через GitHub Actions
+- [x] pytest (SQL-инъекция в `/rag/query`, upload/list/delete документов, кэш)
+
+## 🧪 Тестирование
+
+```bash
+docker-compose up -d postgres redis
+cd backend
+pip install -r requirements.txt -r requirements-dev.txt
+pytest -v
+```
+
+Тесты создают/дропают таблицы на каждый тест (нужен Postgres с расширением
+`vector` — обычный `postgres:16` не подойдёт, используется образ
+`pgvector/pgvector:pg16`, как и в `docker-compose.yml`). LLM и embeddings
+в тестах замоканы — реальных вызовов к OpenRouter не происходит, `OPENROUTER_API_KEY`
+не нужен.
 
 ## 📄 License
 
