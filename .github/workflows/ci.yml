@@ -15,7 +15,6 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r backend/requirements-dev.txt
-      # Информационно, пока не пройдёт lint-долг по всему репозиторию.
       - run: ruff check backend
         continue-on-error: true
 
@@ -24,8 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        # Обычный postgres:16 тут не подойдёт — нужен образ с уже собранным
-        # расширением pgvector (Document/DocumentChunk используют vector-колонку).
+        # Используем образ с уже собранным расширением pgvector
         image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: postgres
