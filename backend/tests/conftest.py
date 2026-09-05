@@ -22,7 +22,6 @@ os.environ.setdefault(
 os.environ.setdefault("REDIS_URL", os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/14"))
 os.environ.setdefault("OPENROUTER_API_KEY", "test-key-not-real")
 
-# ВАЖНО: мы НЕ импортируем engine из app.database, чтобы избежать конфликта event loops
 from app.database import Base, async_session  # noqa: E402
 from app.main import app  # noqa: E402
 from app.services.cache import get_redis_client  # noqa: E402
@@ -34,11 +33,12 @@ TEST_DB_URL = os.environ.get(
 )
 
 
-@pytest_asyncio.fixture(scope="session")
+# 🔥 ИСПРАВЛЕНИЕ: scope="function" вместо "session"
+@pytest_asyncio.fixture(scope="function")
 async def test_engine():
     """
-    Создает и возвращает асинхронный engine специально для тестов.
-    Гарантирует, что он привязан к правильному event loop и будет корректно закрыт.
+    Создает асинхронный engine для каждого теста отдельно.
+    Это предотвращает ScopeMismatch с event_loop и гарантирует чистоту тестов.
     """
     engine = create_async_engine(TEST_DB_URL, echo=False)
     yield engine
@@ -74,7 +74,6 @@ async def client():
 
 @pytest_asyncio.fixture
 async def db_session():
-    """Прямой доступ к БД в тесте — например, чтобы вставить тестовые
-    чанки в обход HTTP-эндпоинтов (upload требует реального PDF+embeddings)."""
+    """Прямой доступ к БД в тесте."""
     async with async_session() as session:
         yield session
