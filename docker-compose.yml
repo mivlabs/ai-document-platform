@@ -32,7 +32,9 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/documents
+      # create_async_engine требует async-драйвер в схеме URL — без "+asyncpg"
+      # SQLAlchemy пытается использовать psycopg2 (sync) и падает на старте.
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/documents
       REDIS_URL: redis://redis:6379
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
     depends_on:
